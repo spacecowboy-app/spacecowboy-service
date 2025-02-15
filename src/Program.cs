@@ -26,11 +26,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi.Models;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 using Spacecowboy.Service;
 using Spacecowboy.Service.Controllers.Hubs;
 using Spacecowboy.Service.Infrastructure;
 using Spacecowboy.Service.Model.Interfaces;
+using Spacecowboy.Service.Model.Services;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -100,6 +104,40 @@ builder.Services.AddCors(options => {
     );
 });
 
+/* Add OpenTelemetry services if OpenTelemetry configuration is present.
+ * See https://opentelemetry.io/docs/instrumentation/net/getting-started/ for more information. */
+if (serviceOptions?.Telemetry is not null) {
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(Telemetry.ServiceName))
+        .WithTracing(builder => {
+            builder
+                .AddSource(Telemetry.ServiceName)
+                .ConfigureResource(resource => resource.AddService(Telemetry.ServiceName))
+                .AddAspNetCoreInstrumentation(options => {
+                    options.Filter = httpContext => !(httpContext.Request.Path.StartsWithSegments(pathBase + "/swagger") || httpContext.Request.Path.StartsWithSegments("/healthz"));
+                    options.RecordException = true;
+                });
+                if (serviceOptions.Telemetry.ConsoleExporter == true) {
+                    builder.AddConsoleExporter();
+                }
+                else if (serviceOptions.Telemetry.OtlpExporter == true) {
+                    builder.AddOtlpExporter();
+                }
+        })
+        .WithMetrics(builder => {
+            builder
+                .AddMeter(Telemetry.ServiceName)
+                .AddAspNetCoreInstrumentation();
+            if (serviceOptions.Telemetry.ConsoleExporter == true) {
+                builder.AddConsoleExporter();
+            }
+            else if (serviceOptions.Telemetry.OtlpExporter == true) {
+                builder.AddOtlpExporter();
+            }
+        });
+}
+builder.Services.AddSingleton<Telemetry>();
+
 var app = builder.Build();
 
 var logger = app.Services.GetService<ILogger<Program>>();
@@ -128,7 +166,7 @@ app.UseSwaggerUI(c => {
     c.SwaggerEndpoint("/swagger/v0/swagger.json", "Spacecowboy API v0");
 });
 
-logger?.LogInformation("Starting Spacecowboy service with repository type [{repositoryType}]", serviceOptions.RepositoryType);
+logger?.LogInformation("Starting Spacecowboy service with repository type [{repositoryType}]", serviceOptions?.RepositoryType ?? "null");
 
 app.Run();
 
