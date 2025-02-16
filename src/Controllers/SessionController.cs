@@ -15,6 +15,7 @@
 */
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using AutoMapper;
@@ -22,6 +23,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
+using Swashbuckle.AspNetCore.Annotations;
+
 using Spacecowboy.Service.Controllers.DTO;
 using Spacecowboy.Service.Controllers.DTO.Errors;
 using Spacecowboy.Service.Controllers.Hubs;
@@ -29,7 +32,6 @@ using Spacecowboy.Service.Model.Entities;
 using Spacecowboy.Service.Model.Exceptions;
 using Spacecowboy.Service.Model.Interfaces;
 using Spacecowboy.Service.Model.Services;
-using Swashbuckle.AspNetCore.Annotations;
 
 
 namespace Spacecowboy.Service.Controllers
@@ -122,6 +124,7 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult<SessionResponse>> GetSession(string sessionId, [FromQuery] Guid? participantId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 var session = await repository.GetSessionAsync(sessionId);
@@ -131,16 +134,20 @@ namespace Spacecowboy.Service.Controllers
                     await repository.ParticipantHeartbeatAsync(sessionId, (Guid) participantId);
                 }
                 log.LogDebug("Get session {SessionId} generation {Generation}", response.Id, response.Generation);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return response;
             }
             catch (SessionNotFoundException)
             {
                 log.LogWarning("Get session {SessionId} not found", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Get session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -198,26 +205,32 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status409Conflict)]
         public async Task<ActionResult<SessionResponse>> CreateSession(string sessionId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 await repository.AddSessionAsync(new Session(sessionId));
                 log.LogInformation("Created session {SessionId}", sessionId);
                 var clientInfo = new ClientInfo(HttpContext?.Request?.Headers?.UserAgent);
                 telemetry?.IncrementSessions();
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return Created("", new SessionResponse(await repository.GetSessionAsync(sessionId)));
             }
             catch (SessionExistsException)
             {
                 log.LogInformation("Session {SessionId} already exists and cannot be created", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session already exists");
                 return CreateSessionAlreadyExists(sessionId);
             }
             catch (InvalidSessionIdException)
             {
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Invalid session id");
                 return InvalidSessionName(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Create session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -239,21 +252,26 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult> DeleteSession(string sessionId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 await repository.DeleteSessionAsync(sessionId);
                 log.LogInformation("Session {SessionId} deleted", sessionId);
                 telemetry?.DecrementSessions();
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return Ok();
             }
             catch (SessionNotFoundException)
             {
                 log.LogInformation("Delete session {SessionId} failed, session does not exist", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Delete session {SessionId} resulted in an unexpected error", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -273,6 +291,7 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult<SessionResponse>> AddDeck(string sessionId, [FromBody] AddDeckRequest deck)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 Session session = await repository.GetSessionAsync(sessionId);
@@ -281,16 +300,20 @@ namespace Spacecowboy.Service.Controllers
                 session.AddDeck(map.Map<Deck>(deck));
                 var response = new SessionResponse(await repository.UpdateSessionAsync(session));
                 await SessionHub.SendSessionUpdated(sessionHub, response);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return response;
             }
             catch (SessionNotFoundException)
             {
                 log.LogDebug("Attempt to add deck to non-existing session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Add cards to session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -314,11 +337,13 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult<Participant>> AddParticipant(string sessionId, [FromBody] CreateParticipantRequest participant)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 if (string.IsNullOrWhiteSpace(participant.Name))
                 {
                     log.LogDebug("Attempt to add participant without specifying a participant name");
+                    Activity.Current?.SetStatus(ActivityStatusCode.Error, "Participant name not specified");
                     return ParticipantNameNotSpecified(sessionId);
                 }
 
@@ -330,16 +355,20 @@ namespace Spacecowboy.Service.Controllers
                 await SessionHub.SendSessionUpdated(sessionHub, sessionResponse);
                 var clientInfo = new ClientInfo(HttpContext?.Request?.Headers?.UserAgent);
                 log.LogInformation("Add participant {Participant} to session {SessionId}", p, sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return Ok(p);
             }
             catch (SessionNotFoundException)
             {
                 log.LogDebug("Attempt to add participant to non-existing session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Add participant to session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -358,6 +387,7 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult<SessionResponse>> RemoveParticipant(string sessionId, Guid participantId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 Session session = await repository.GetSessionAsync(sessionId);
@@ -365,22 +395,27 @@ namespace Spacecowboy.Service.Controllers
                 if (participant == null)
                 {
                     log.LogDebug("Attempting to remove participant {ParticipantId} from session {SessionId} but participant is not a member of that session", participantId, sessionId);
+                    Activity.Current?.SetStatus(ActivityStatusCode.Error, "Participant not found");
                     return ParticipantNotFound(sessionId, participantId);
                 }
                 session.RemoveParticipant(participantId);
                 log.LogInformation("Removed participant {Participant} from session {SessionId}", participant, sessionId);
                 var sessionResponse = new SessionResponse(await repository.UpdateSessionAsync(session));
                 await SessionHub.SendSessionUpdated(sessionHub, sessionResponse);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return sessionResponse;
             }
             catch (SessionNotFoundException)
             {
                 log.LogDebug("Attempt to remove participant from non-existing session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Remove participant {ParticipantId} from session {SessionId}", participantId, sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -399,20 +434,25 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult<VotesResponse>> GetVotes(string sessionId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 Session session = await repository.GetSessionAsync(sessionId);
                 var response = new VotesResponse(session);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return response;
             }
             catch (SessionNotFoundException)
             {
                 log.LogInformation("Get votes for session {SessionId} failed, session does not exist", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Get votes in session {SessionId} resulted in unexpected error", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -430,6 +470,7 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), StatusCodes.Status404NotFound)]
         public async Task<ActionResult> DeleteVotes(string sessionId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 Session session = await repository.GetSessionAsync(sessionId);
@@ -438,16 +479,20 @@ namespace Spacecowboy.Service.Controllers
                 await SessionHub.SendSessionVotesCleared(sessionHub, sessionId);
                 await SessionHub.SendSessionUpdated(sessionHub, sessionResponse);
                 log.LogDebug("Deleted all votes in session {SessionId}", session.Id);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return Ok();
             }
             catch (SessionNotFoundException)
             {
                 log.LogDebug("Attempting to delete votes from non-existing session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Clear votes from session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -469,6 +514,7 @@ namespace Spacecowboy.Service.Controllers
         [ProducesResponseType(typeof(ErrorDetails), 409)]
         public async Task<ActionResult> CastVote(string sessionId, Guid participantId, Guid cardId)
         {
+            Activity.Current?.AddSession(sessionId);
             try
             {
                 Session session = await repository.GetSessionAsync(sessionId);
@@ -481,32 +527,39 @@ namespace Spacecowboy.Service.Controllers
                 if (!session.AddVote(participantId, cardId))
                 {
                     log.LogInformation("Vote {Card} from participant {Participant} in ession {sessionId} rejected as voting is completed", card, participant, sessionId);
+                    Activity.Current?.SetStatus(ActivityStatusCode.Error, "Voting completed");
                     return VotingCompleted(sessionId, participantId, cardId);
                 }
 
                 var sessionResponse = new SessionResponse(await repository.UpdateSessionAsync(session));
                 await SessionHub.SendSessionUpdated(sessionHub, sessionResponse);
                 log.LogInformation("Participant {Participant} cast vote {Card} in session {SessionId}", participant, card, sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Ok);
                 return Ok();
             }
             catch (SessionNotFoundException)
             {
                 log.LogWarning("Request to cast vote in session {SessionId} by participant {ParticipantId} failed, session does not exist", sessionId, participantId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Session not found");
                 return SessionNotFound(sessionId);
             }
             catch (ParticipantNotFoundException)
             {
                 log.LogWarning("Request to cast vote for participant {ParticipantId} in session {SessionId} failed, participant does not exist", participantId, sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Participant not found");
                 return ParticipantNotFound(sessionId, participantId);
             }
             catch (CardNotFoundException)
             {
                 log.LogWarning("Request to cast vote with card {CardId} in session {SessionId} by participant {ParticipantId} failed, card does not exist", cardId, sessionId, participantId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Card not found");
                 return CardNotFound(sessionId, cardId);
             }
             catch (Exception ex)
             {
                 log.LogError(ex, "Cast vote in session {SessionId}", sessionId);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "Unexpected error");
+                Activity.Current?.AddException(ex);
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -525,6 +578,7 @@ namespace Spacecowboy.Service.Controllers
         {
             var removedSessions = await SessionMaintenance.SessionCleanupAsync(repository, log);
             telemetry?.DecrementSessions(removedSessions);
+            Activity.Current?.SetStatus(ActivityStatusCode.Ok);
             return Ok();
         }
 
