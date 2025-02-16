@@ -48,18 +48,16 @@ namespace Spacecowboy.Service.Controllers
         private readonly IMapper map;
         private readonly ISessionRepository repository;
         private readonly IHubContext<SessionHub>? sessionHub;
+        private readonly Telemetry? telemetry;
 
-        public SessionController(ILogger<SessionController> log, ISessionRepository repository, IMapper map, IHubContext<SessionHub>? hub)
+
+        public SessionController(ILogger<SessionController> log, ISessionRepository repository, IMapper map, IHubContext<SessionHub>? hub, Telemetry? telemetry)
         {
             this.log = log ?? throw new ArgumentNullException(nameof(log));
             this.map = map ?? throw new ArgumentNullException(nameof(map));
             this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
             this.sessionHub = hub;
-
-            if (sessionHub == null)
-            {
-                log.LogWarning("No session hub provided -- will not send events to clients");
-            }
+            this.telemetry = telemetry;
         }
 
 
@@ -205,8 +203,7 @@ namespace Spacecowboy.Service.Controllers
                 await repository.AddSessionAsync(new Session(sessionId));
                 log.LogInformation("Created session {SessionId}", sessionId);
                 var clientInfo = new ClientInfo(HttpContext?.Request?.Headers?.UserAgent);
-                // TODO Telemetry: Increment total number of sessions created
-                // TODO Telemetry: Increment total number of sessions currently active
+                telemetry?.IncrementSessions();
                 return Created("", new SessionResponse(await repository.GetSessionAsync(sessionId)));
             }
             catch (SessionExistsException)
@@ -246,7 +243,7 @@ namespace Spacecowboy.Service.Controllers
             {
                 await repository.DeleteSessionAsync(sessionId);
                 log.LogInformation("Session {SessionId} deleted", sessionId);
-                // TODO Telemetry: Decrement total number of sessions currently active
+                telemetry?.DecrementSessions();
                 return Ok();
             }
             catch (SessionNotFoundException)
@@ -526,8 +523,8 @@ namespace Spacecowboy.Service.Controllers
         [SwaggerOperation("Cleanup sessions")]
         public async Task<ActionResult> CleanupSessions()
         {
-            var sessions = await SessionMaintenance.SessionCleanupAsync(repository, log);
-            // TODO Telemetry: Set total number of active sessions
+            var removedSessions = await SessionMaintenance.SessionCleanupAsync(repository, log);
+            telemetry?.DecrementSessions(removedSessions);
             return Ok();
         }
 
