@@ -22,7 +22,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
-using Prometheus;
 using Spacecowboy.Service.Controllers.DTO;
 using Spacecowboy.Service.Controllers.DTO.Errors;
 using Spacecowboy.Service.Controllers.Hubs;
@@ -45,23 +44,6 @@ namespace Spacecowboy.Service.Controllers
     [ApiController]
     public class SessionController : ControllerBase
     {
-        private static readonly Counter sessionsCreated = Metrics.CreateCounter("spacecowboy_sessions_total", "Accumulated number of session creatied",
-            new CounterConfiguration
-            {
-                LabelNames = new[] { "client_name", "client_version" }
-            });
-        private static readonly Gauge sessionsCurrent = Metrics.CreateGauge("spacecowboy_sessions_current", "Number of active sessions");
-        private static readonly Counter participantsTotal = Metrics.CreateCounter("spacecowboy_participants_total", "Accumulated number of participants across all sessions created",
-            new CounterConfiguration
-            {
-                LabelNames = new[] { "avatar", "client_name", "client_version" }
-            });
-        private static readonly Counter decksTotal = Metrics.CreateCounter("spacecowboy_decks_created_total", "Accumulated number of decks added to a session",
-            new CounterConfiguration
-            {
-                LabelNames = new[] { "deck_name", "deck_type" }
-            });
-
         private readonly ILogger<SessionController> log;
         private readonly IMapper map;
         private readonly ISessionRepository repository;
@@ -223,8 +205,8 @@ namespace Spacecowboy.Service.Controllers
                 await repository.AddSessionAsync(new Session(sessionId));
                 log.LogInformation("Created session {SessionId}", sessionId);
                 var clientInfo = new ClientInfo(HttpContext?.Request?.Headers?.UserAgent);
-                sessionsCreated.WithLabels(clientInfo.Name, clientInfo.Version).Inc();
-                sessionsCurrent.Inc();
+                // TODO Telemetry: Increment total number of sessions created
+                // TODO Telemetry: Increment total number of sessions currently active
                 return Created("", new SessionResponse(await repository.GetSessionAsync(sessionId)));
             }
             catch (SessionExistsException)
@@ -264,7 +246,7 @@ namespace Spacecowboy.Service.Controllers
             {
                 await repository.DeleteSessionAsync(sessionId);
                 log.LogInformation("Session {SessionId} deleted", sessionId);
-                sessionsCurrent.Dec();
+                // TODO Telemetry: Decrement total number of sessions currently active
                 return Ok();
             }
             catch (SessionNotFoundException)
@@ -302,7 +284,6 @@ namespace Spacecowboy.Service.Controllers
                 session.AddDeck(map.Map<Deck>(deck));
                 var response = new SessionResponse(await repository.UpdateSessionAsync(session));
                 await SessionHub.SendSessionUpdated(sessionHub, response);
-                decksTotal.WithLabels(deck.Name ?? "-", deck.Type ?? "-").Inc();
                 return response;
             }
             catch (SessionNotFoundException)
@@ -351,7 +332,6 @@ namespace Spacecowboy.Service.Controllers
                 await repository.ParticipantHeartbeatAsync(sessionId, p.Id);
                 await SessionHub.SendSessionUpdated(sessionHub, sessionResponse);
                 var clientInfo = new ClientInfo(HttpContext?.Request?.Headers?.UserAgent);
-                participantsTotal.WithLabels(string.IsNullOrWhiteSpace(participant.Avatar) ? "-" : participant.Avatar, clientInfo.Name, clientInfo.Version).Inc();
                 log.LogInformation("Add participant {Participant} to session {SessionId}", p, sessionId);
                 return Ok(p);
             }
@@ -547,7 +527,7 @@ namespace Spacecowboy.Service.Controllers
         public async Task<ActionResult> CleanupSessions()
         {
             var sessions = await SessionMaintenance.SessionCleanupAsync(repository, log);
-            sessionsCurrent.Set(sessions);
+            // TODO Telemetry: Set total number of active sessions
             return Ok();
         }
 
