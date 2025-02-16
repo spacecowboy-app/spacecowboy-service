@@ -37,7 +37,7 @@ namespace Spacecowboy.Service.Model.Services
         /// </summary>
         /// <param name="repository">Session repository</param>
         /// <param name="log">Logger or <c>null</c> to disable logging</param>
-        /// <returns>The number of remaining active sessions</returns>
+        /// <returns>The number of removed sessions</returns>
         public static async Task<int> SessionCleanupAsync(ISessionRepository repository, ILogger log)
         {
             if (repository == null) throw new ArgumentNullException(nameof(repository));
@@ -58,7 +58,7 @@ namespace Spacecowboy.Service.Model.Services
             }
             var activeSessions = (await repository.GetSessionsAsync()).Count();
             log?.LogInformation("Session cleanup: {0} active sessions, {1} sessions deleted", activeSessions, deleteCount);
-            return activeSessions;
+            return deleteCount;
         }
     }
 }
